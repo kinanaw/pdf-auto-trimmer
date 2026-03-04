@@ -2,13 +2,13 @@ import streamlit as st
 import fitz
 import io
 
-st.set_page_config(page_title="PDF Ink Trimmer", page_icon="✂️")
+st.set_page_config(page_title="Kienan PDF Trimmer", page_icon="✂️")
 
-st.title("✂️ Smart PDF Ink Trimmer")
+st.title("✂️ Kienan Awidat PDF Trimmer")
 
 st.markdown(
     """
-    <div style="font-family: 'David', 'David Libre', serif; font-size: 30px; text-align: center; width: 100%; margin-top: 10px; margin-bottom: 20px;">
+    <div style="font-family: 'David', 'David Libre', serif; font-size: 30px; text-align: center;">
         מוצר זה פותח על ידי <b><u>כינאן עוידאת</u></b>, לשימושכם באהבה.
     </div>
     """,
@@ -16,36 +16,46 @@ st.markdown(
 )
 st.write("---")
 
-padding_mm = st.sidebar.slider("Extra Margin (mm)", 0.0, 20.0, 2.0, 0.5)
+padding_mm = st.sidebar.slider("Extra Margin (mm)", 0.0, 20.0, 1.0, 0.5)
 
 uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file:
     try:
-        src_doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        new_doc = fitz.open()
+        src = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        dst = fitz.open()
 
-        for page_number, page in enumerate(src_doc):
+        for pno, page in enumerate(src):
 
             page_area = page.rect.width * page.rect.height
             bbox = None
 
-            for item in page.get_bboxlog():
-                rect = fitz.Rect(item[1])
+            # ---- TEXT ----
+            for block in page.get_text("blocks"):
+                rect = fitz.Rect(block[:4])
+                bbox = rect if bbox is None else bbox | rect
+
+            # ---- STROKE PATHS ONLY ----
+            for d in page.get_drawings():
+
+                # מתעלם ממילויים
+                if d["fill"] is not None:
+                    continue
+
+                rect = fitz.Rect(d["rect"])
                 rect_area = rect.width * rect.height
 
-                # מתעלם מאובייקטים ענקיים (כמו מסגרת חיצונית)
-                if rect_area > page_area * 0.9:
+                # מתעלם ממסגרות ענק
+                if rect_area > page_area * 0.8:
                     continue
 
                 bbox = rect if bbox is None else bbox | rect
 
             if not bbox:
-                new_doc.insert_pdf(src_doc, from_page=page_number, to_page=page_number)
+                dst.insert_pdf(src, from_page=pno, to_page=pno)
                 continue
 
             pad = padding_mm * 2.83465
-
             bbox = fitz.Rect(
                 bbox.x0 - pad,
                 bbox.y0 - pad,
@@ -58,32 +68,31 @@ if uploaded_file:
             if bbox.width <= 0 or bbox.height <= 0:
                 continue
 
-            new_page = new_doc.new_page(
+            new_page = dst.new_page(
                 width=bbox.width,
                 height=bbox.height
             )
 
             new_page.show_pdf_page(
                 fitz.Rect(0, 0, bbox.width, bbox.height),
-                src_doc,
-                page_number,
+                src,
+                pno,
                 clip=bbox
             )
 
-        output = io.BytesIO()
-        new_doc.save(output)
-        output.seek(0)
+        buffer = io.BytesIO()
+        dst.save(buffer)
+        buffer.seek(0)
 
-        st.success("White margins physically removed.")
+        st.success("White margins removed for pdf files.")
 
         st.download_button(
-            "Download Trimmed PDF",
-            output,
-            file_name="trimmed_clean.pdf",
+            "Download Clean PDF",
+            buffer,
+            file_name="trimmed_pdf.pdf",
             mime="application/pdf",
             use_container_width=True
         )
 
     except Exception as e:
-        st.error("Crash detected")
         st.exception(e)
