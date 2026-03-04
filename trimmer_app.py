@@ -1,82 +1,71 @@
 import streamlit as st
 import fitz  # PyMuPDF
-from PIL import Image, ImageChops
 import io
 
-st.set_page_config(page_title="Auto PDF Trimmer", page_icon="✂️")
+st.set_page_config(page_title="PDF Ink Trimmer", page_icon="✂️")
 
-st.title("✂️ Automatic PDF White-Space Trimmer")
+st.title("✂️ True Vector PDF Ink Trimmer")
 
-st.sidebar.header("Settings")
-padding = st.sidebar.slider("Margin Padding (pixels)", 0, 100, 20)
-threshold = st.sidebar.slider("Sensitivity", 0, 255, 240)
+# ===== Credit Section =====
+st.markdown(
+    """
+    <div style="font-family: 'David', 'David Libre', serif; font-size: 30px; text-align: center; width: 100%; margin-top: 10px; margin-bottom: 20px;">
+        מוצר זה פותח על ידי <b><u>כינאן עוידאת</u></b>, לשימושכם באהבה.
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+st.write("---")
+# ===========================
 
-uploaded_file = st.file_uploader("Drop your PDF here", type="pdf")
+st.write("Removes all white margins by trimming to actual drawn content.")
+
+padding_mm = st.sidebar.slider("Extra Margin (mm)", 0.0, 20.0, 2.0, 0.5)
+
+uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file:
+    try:
+        file_bytes = uploaded_file.read()
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
 
-    file_bytes = uploaded_file.read()
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
+        for page in doc:
 
-    processed_pages = []
+            bbox = None
 
-    st.info(f"Processing {len(doc)} pages...")
-    progress_bar = st.progress(0)
+            for item in page.get_bboxlog():
+                rect = fitz.Rect(item[1])
+                if bbox is None:
+                    bbox = rect
+                else:
+                    bbox |= rect  # union of all objects
 
-    for i, page in enumerate(doc):
+            if bbox:
+                # convert mm to PDF points
+                pad = padding_mm * 2.83465
 
-        # Render at true 300 DPI
-        pix = page.get_pixmap(dpi=300)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                bbox.x0 -= pad
+                bbox.y0 -= pad
+                bbox.x1 += pad
+                bbox.y1 += pad
 
-        # Convert to grayscale for cleaner thresholding
-        gray = img.convert("L")
+                page.set_cropbox(bbox)
+                page.set_mediabox(bbox)
 
-        # Create mask: anything darker than threshold is considered content
-        mask = gray.point(lambda x: 255 if x < threshold else 0)
+        output = io.BytesIO()
+        doc.save(output)
+        output.seek(0)
 
-        bbox = mask.getbbox()
-
-        if bbox:
-            left, upper, right, lower = bbox
-
-            bbox = (
-                max(0, left - padding),
-                max(0, upper - padding),
-                min(img.width, right + padding),
-                min(img.height, lower + padding)
-            )
-
-            cropped = img.crop(bbox)
-        else:
-            # אם לא נמצא תוכן – שומר את העמוד כמו שהוא
-            cropped = img
-
-        processed_pages.append(cropped)
-        progress_bar.progress((i + 1) / len(doc))
-
-    if processed_pages:
-
-        output_buffer = io.BytesIO()
-
-        processed_pages[0].save(
-            output_buffer,
-            format="PDF",
-            save_all=True,
-            append_images=processed_pages[1:],
-            resolution=300
-        )
-
-        output_buffer.seek(0)
-
-        st.success("Done.")
-
-        st.image(processed_pages[0], caption="Preview")
+        st.success("All pages trimmed to ink area.")
 
         st.download_button(
-            label="Download Trimmed PDF",
-            data=output_buffer,
-            file_name="trimmed_document.pdf",
+            "Download Trimmed PDF",
+            output,
+            file_name="trimmed_vector.pdf",
             mime="application/pdf",
             use_container_width=True
         )
+
+    except Exception as e:
+        st.error("Crash detected")
+        st.exception(e)
