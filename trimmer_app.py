@@ -4,7 +4,7 @@ import io
 
 st.set_page_config(page_title="PDF Ink Trimmer", page_icon="✂️")
 
-st.title("✂️ True Physical PDF Ink Trimmer")
+st.title("✂️ Smart PDF Ink Trimmer")
 
 st.markdown(
     """
@@ -27,18 +27,24 @@ if uploaded_file:
 
         for page_number, page in enumerate(src_doc):
 
+            page_area = page.rect.width * page.rect.height
             bbox = None
 
             for item in page.get_bboxlog():
                 rect = fitz.Rect(item[1])
+                rect_area = rect.width * rect.height
+
+                # מתעלם מאובייקטים ענקיים (כמו מסגרת חיצונית)
+                if rect_area > page_area * 0.9:
+                    continue
+
                 bbox = rect if bbox is None else bbox | rect
 
             if not bbox:
-                # אם אין תוכן – מעתיקים עמוד רגיל
                 new_doc.insert_pdf(src_doc, from_page=page_number, to_page=page_number)
                 continue
 
-            pad = padding_mm * 2.83465  # mm → points
+            pad = padding_mm * 2.83465
 
             bbox = fitz.Rect(
                 bbox.x0 - pad,
@@ -52,13 +58,11 @@ if uploaded_file:
             if bbox.width <= 0 or bbox.height <= 0:
                 continue
 
-            # יוצרים עמוד חדש בגודל פיזי של ה-Ink בלבד
             new_page = new_doc.new_page(
                 width=bbox.width,
                 height=bbox.height
             )
 
-            # מציגים רק את אזור ה-bbox
             new_page.show_pdf_page(
                 fitz.Rect(0, 0, bbox.width, bbox.height),
                 src_doc,
@@ -70,12 +74,12 @@ if uploaded_file:
         new_doc.save(output)
         output.seek(0)
 
-        st.success("PDF physically resized. No white margins remain.")
+        st.success("White margins physically removed.")
 
         st.download_button(
             "Download Trimmed PDF",
             output,
-            file_name="trimmed_physical.pdf",
+            file_name="trimmed_clean.pdf",
             mime="application/pdf",
             use_container_width=True
         )
