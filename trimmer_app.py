@@ -1,86 +1,56 @@
 import streamlit as st
 import fitz  # PyMuPDF
-from PIL import Image, ImageChops
 import io
 
-# Page Config
-st.set_page_config(page_title="Auto PDF Trimmer", page_icon="✂️")
+# הגדרות דף
+st.set_page_config(page_title="PDF Multi-Trimmer", page_icon="✂️", layout="wide")
 
-st.title("✂️ Automatic PDF White-Space Trimmer")
-st.markdown("Upload a PDF with varying page sizes. This app will **automatically** detect the inked area and crop out the white margins.")
+st.title("✂️ PDF Multi-Trimmer")
+st.markdown("העלה קובץ אחד או **כמה קבצים יחד**. המערכת תבצע חיתוך שוליים לכל אחד בנפרד.")
 
-# --- Sidebar Settings ---
-st.sidebar.header("Settings")
-padding = st.sidebar.slider("Margin Padding (pixels)", 0, 100, 20, help="Adds a little breathing room around the ink.")
-threshold = st.sidebar.slider("Sensitivity", 0, 255, 250, help="Lower if it crops too much; higher if it leaves gray noise.")
+# תפריט צד
+padding = st.sidebar.slider("Padding (points)", 0, 100, 20)
 
-# --- File Uploader ---
-uploaded_file = st.file_uploader("Drop your PDF here", type="pdf")
+# העלאת קבצים מרובים
+uploaded_files = st.file_uploader("גרור לכאן קבצי PDF", type="pdf", accept_multiple_files=True)
 
-if uploaded_file:
-    # Open PDF from memory
-    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    processed_pages = []
+if uploaded_files:
+    st.write(f"הועלו {len(uploaded_files)} קבצים:")
     
-    st.info(f"Processing {len(doc)} pages...")
-    progress_bar = st.progress(0)
+    # לולאה שעוברת על כל קובץ שהועלה
+    for uploaded_file in uploaded_files:
+        with st.expander(f"מעבד את: {uploaded_file.name}", expanded=True):
+            # פתיחת ה-PDF
+            file_bytes = uploaded_file.read()
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            
+            # עיבוד כל עמוד בתוך הקובץ
+            for page in doc:
+                item_list = page.get_bboxlog()
+                if item_list:
+                    full_content_box = fitz.Rect()
+                    for item in item_list:
+                        item_rect = fitz.Rect(item[1])
+                        full_content_box.include_rect(item_rect)
+                    
+                    # הוספת מרווח
+                    full_content_box.x0 -= padding
+                    full_content_box.y0 -= padding
+                    full_content_box.x1 += padding
+                    full_content_box.y1 += padding
+                    
+                    page.set_cropbox(full_content_box)
 
-    for i in range(len(doc)):
-        page = doc[i]
-        
-        # 1. Render page to high-res image (300 DPI approx)
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-        # 2. Find Content Bounding Box
-        # We compare the image against a pure white background
-        bg = Image.new('RGB', img.size, (255, 255, 255))
-        diff = ImageChops.difference(img, bg)
-        
-        # Use a threshold to ignore "near-white" noise (common in scans)
-        diff = diff.point(lambda p: p if p > (255 - threshold) else 0)
-        bbox = diff.getbbox()
-
-        if bbox:
-            # Add the user-defined padding
-            left, upper, right, lower = bbox
-            bbox = (
-                max(0, left - padding), 
-                max(0, upper - padding), 
-                min(img.size[0], right + padding), 
-                min(img.size[1], lower + padding)
+            # שמירה לזיכרון
+            output_buffer = io.BytesIO()
+            doc.save(output_buffer, garbage=4, deflate=True, clean=True)
+            
+            # כפתור הורדה ספציפי לכל קובץ
+            st.success(f"הסתיים העיבוד של {uploaded_file.name}")
+            st.download_button(
+                label=f"הורד קובץ חתוך: {uploaded_file.name}",
+                data=output_buffer.getvalue(),
+                file_name=f"trimmed_{uploaded_file.name}",
+                mime="application/pdf",
+                key=uploaded_file.name # מפתח ייחודי לכפתור
             )
-            cropped_img = img.crop(bbox)
-            processed_pages.append(cropped_img)
-        
-        progress_bar.progress((i + 1) / len(doc))
-
-    # --- Results & Download ---
-    if processed_pages:
-        # Save images back to a single PDF buffer
-        output_buffer = io.BytesIO()
-        processed_pages[0].save(
-            output_buffer, 
-            format="PDF", 
-            save_all=True, 
-            append_images=processed_pages[1:],
-            resolution=100.0,
-            quality=95
-        )
-        
-        st.success("✨ Done! All pages trimmed individually.")
-        
-        # Preview first and last page to show the different sizes
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(processed_pages[0], caption="Page 1 Trimmed")
-        with col2:
-            st.image(processed_pages[-1], caption=f"Page {len(doc)} Trimmed")
-
-        st.download_button(
-            label="Download Trimmed PDF",
-            data=output_buffer.getvalue(),
-            file_name="trimmed_document.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
