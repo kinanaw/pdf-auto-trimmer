@@ -13,7 +13,7 @@ import io
 st.set_page_config(page_title="PDF Inked-Area Trimmer", page_icon="✂️", layout="wide")
 
 st.title("✂️ PDF Inked-Area Trimmer")
-st.markdown("פותח ע"י כינאן עוידאת, לשימושכם באהבה.")
+st.markdown("פותח על ידי כינאן עוידאת, לשימושכם באהבה.")
 
 # Sidebar
 padding = st.sidebar.slider("Padding (points)", 0, 100, 20)
@@ -80,3 +80,4 @@ if uploaded_files:
                 mime="application/pdf",
                 key=f"dl_{uploaded_file.name}"
             )
+
