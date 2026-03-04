@@ -26,36 +26,38 @@ if uploaded_file:
         dst = fitz.open()
 
         for pno, page in enumerate(src):
-
-            page_area = page.rect.width * page.rect.height
+            page_rect = page.rect
             bbox = None
 
-            # ---- TEXT ----
-            for block in page.get_text("blocks"):
-                rect = fitz.Rect(block[:4])
-                bbox = rect if bbox is None else bbox | rect
+            # 1. חיפוש טקסט ממשי
+            text_dict = page.get_text("dict")
+            for block in text_dict["blocks"]:
+                if "lines" in block:  # מוודא שיש תוכן טקסטואלי
+                    rect = fitz.Rect(block["bbox"])
+                    bbox = rect if bbox is None else bbox | rect
 
-            # ---- STROKE PATHS ONLY ----
+            # 2. חיפוש גרפיקה (צורות, קווים ומילויים)
             for d in page.get_drawings():
-
-                # מתעלם ממילויים
-                if d["fill"] is not None:
-                    continue
-
                 rect = fitz.Rect(d["rect"])
-                rect_area = rect.width * rect.height
-
-                # מתעלם ממסגרות ענק
-                if rect_area > page_area * 0.8:
+                
+                # התעלמות מאובייקטים שמתפרסים על פני כל הדף (כנראה רקע)
+                if rect.width > page_rect.width * 0.95 and rect.height > page_rect.height * 0.95:
                     continue
-
+                
                 bbox = rect if bbox is None else bbox | rect
 
+            # 3. חיפוש תמונות
+            for img in page.get_image_info():
+                rect = fitz.Rect(img["bbox"])
+                bbox = rect if bbox is None else bbox | rect
+
+            # אם לא נמצא תוכן בכלל, שומרים על הדף המקורי או מדלגים
             if not bbox:
                 dst.insert_pdf(src, from_page=pno, to_page=pno)
                 continue
 
-            pad = padding_mm * 2.83465
+            # הוספת השוליים שהמשתמש בחר
+            pad = padding_mm * 2.83465  # המרה מ-mm לנקודות PDF
             bbox = fitz.Rect(
                 bbox.x0 - pad,
                 bbox.y0 - pad,
@@ -63,16 +65,19 @@ if uploaded_file:
                 bbox.y1 + pad
             )
 
-            bbox = bbox & page.mediabox
+            # וודוא שהתיבה לא חורגת מגבולות הדף המקורי
+            bbox = bbox & page_rect
 
             if bbox.width <= 0 or bbox.height <= 0:
                 continue
 
+            # יצירת הדף החדש בגודל המצומצם
             new_page = dst.new_page(
                 width=bbox.width,
                 height=bbox.height
             )
 
+            # העתקת התוכן מהמקור אל הדף החדש תוך חיתוך (clip)
             new_page.show_pdf_page(
                 fitz.Rect(0, 0, bbox.width, bbox.height),
                 src,
@@ -84,12 +89,12 @@ if uploaded_file:
         dst.save(buffer)
         buffer.seek(0)
 
-        st.success("White margins removed for pdf files.")
+        st.success("השוליים הלבנים הוסרו בהצלחה!")
 
         st.download_button(
             "Download Clean PDF",
             buffer,
-            file_name="trimmed_pdf.pdf",
+            file_name="trimmed_pdf_fixed.pdf",
             mime="application/pdf",
             use_container_width=True
         )
