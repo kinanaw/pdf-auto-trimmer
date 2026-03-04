@@ -4,14 +4,14 @@ import io
 
 st.set_page_config(page_title="PDF Ink Trimmer", page_icon="✂️")
 
-st.title("✂️ True Vector PDF Ink Trimmer")
+st.title("✂️ True Physical PDF Ink Trimmer")
 
 st.markdown(
     """
     <div style="font-family: 'David', 'David Libre', serif; font-size: 30px; text-align: center; width: 100%; margin-top: 10px; margin-bottom: 20px;">
         מוצר זה פותח על ידי <b><u>כינאן עוידאת</u></b>, לשימושכם באהבה.
     </div>
-    """, 
+    """,
     unsafe_allow_html=True
 )
 st.write("---")
@@ -22,51 +22,60 @@ uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file:
     try:
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        src_doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        new_doc = fitz.open()
 
-        for page in doc:
+        for page_number, page in enumerate(src_doc):
 
-            original_media = page.mediabox
             bbox = None
 
             for item in page.get_bboxlog():
                 rect = fitz.Rect(item[1])
                 bbox = rect if bbox is None else bbox | rect
 
-            if bbox:
+            if not bbox:
+                # אם אין תוכן – מעתיקים עמוד רגיל
+                new_doc.insert_pdf(src_doc, from_page=page_number, to_page=page_number)
+                continue
 
-                pad = padding_mm * 2.83465
+            pad = padding_mm * 2.83465  # mm → points
 
-                bbox = fitz.Rect(
-                    bbox.x0 - pad,
-                    bbox.y0 - pad,
-                    bbox.x1 + pad,
-                    bbox.y1 + pad
-                )
+            bbox = fitz.Rect(
+                bbox.x0 - pad,
+                bbox.y0 - pad,
+                bbox.x1 + pad,
+                bbox.y1 + pad
+            )
 
-                # ===== CLIP TO ORIGINAL PAGE =====
-                bbox = fitz.Rect(
-                    max(original_media.x0, bbox.x0),
-                    max(original_media.y0, bbox.y0),
-                    min(original_media.x1, bbox.x1),
-                    min(original_media.y1, bbox.y1),
-                )
+            bbox = bbox & page.mediabox
 
-                # לוודא bbox תקין
-                if bbox.width > 0 and bbox.height > 0:
-                    page.set_mediabox(bbox)
-                    page.set_cropbox(bbox)
+            if bbox.width <= 0 or bbox.height <= 0:
+                continue
+
+            # יוצרים עמוד חדש בגודל פיזי של ה-Ink בלבד
+            new_page = new_doc.new_page(
+                width=bbox.width,
+                height=bbox.height
+            )
+
+            # מציגים רק את אזור ה-bbox
+            new_page.show_pdf_page(
+                fitz.Rect(0, 0, bbox.width, bbox.height),
+                src_doc,
+                page_number,
+                clip=bbox
+            )
 
         output = io.BytesIO()
-        doc.save(output)
+        new_doc.save(output)
         output.seek(0)
 
-        st.success("All pages trimmed successfully.")
+        st.success("PDF physically resized. No white margins remain.")
 
         st.download_button(
             "Download Trimmed PDF",
             output,
-            file_name="trimmed_vector.pdf",
+            file_name="trimmed_physical.pdf",
             mime="application/pdf",
             use_container_width=True
         )
