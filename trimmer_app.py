@@ -1,8 +1,7 @@
 import streamlit as st
-import fitz
-from PIL import Image
+import fitz  # PyMuPDF
 import io
-import numpy as np
+from PIL import Image
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -11,118 +10,73 @@ st.title("✂️ Kienan PDF Trimmer")
 st.markdown("❤️ מוצר זה פותח על ידי כינאן עוידאת, לשימושכם באהבה.")
 st.markdown("---")
 
-extra_margin_mm = st.slider('שוליים נוספים (מ"מ)', min_value=0, max_value=20, value=3)
-uploaded_file = st.file_uploader("העלה קובץ PDF", type=["pdf"])
+padding_mm = st.sidebar.slider("שוליים נוספים (מ\"מ)", 0.0, 20.0, 1.0, 0.5)
+dpi_value = st.sidebar.select_slider("רזולוציה (DPI)", options=[72, 100, 150, 200], value=100)
+sensitivity = st.sidebar.slider("רגישות (נמוך = אגרסיבי)", 200, 255, 250, 1)
 
-if uploaded_file is not None:
-    st.session_state["pdf_bytes"] = uploaded_file.read()
-    st.session_state["pdf_name"] = uploaded_file.name
+uploaded_file = st.file_uploader("📂 העלה קובץ PDF", type="pdf")
 
+if uploaded_file:
+    try:
+        src = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        dst = fitz.open()
+        progress_bar = st.progress(0)
+        n = src.page_count
 
-def mm_to_points(mm):
-    return mm * 72.0 / 25.4
+        for pno in range(n):
+            page = src[pno]
+            pix = page.get_pixmap(dpi=dpi_value)
+            img = Image.open(io.BytesIO(pix.tobytes()))
 
+            gray_img = img.convert("L")
+            bw_mask = gray_img.point(lambda x: 0 if x > sensitivity else 255)
+            pixel_bbox = bw_mask.getbbox()
 
-def get_content_bbox(page):
-    """
-    Renders the page and finds the bounding box of non-background content.
-    Strategy: background = most common color (mode). Content = anything different.
-    """
-    scale = 150 / 72
-    mat = fitz.Matrix(scale, scale)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            if not pixel_bbox:
+                dst.insert_pdf(src, from_page=pno, to_page=pno)
+                progress_bar.progress((pno + 1) / n)
+                continue
 
-    # Convert to grayscale
-    gray = arr.mean(axis=2).astype(np.uint8)
+            scale_x = page.rect.width / pix.width
+            scale_y = page.rect.height / pix.height
 
-    # Find background color = most frequent pixel value
-    hist = np.bincount(gray.flatten(), minlength=256)
-    bg_color = int(np.argmax(hist))
+            bbox = fitz.Rect(
+                pixel_bbox[0] * scale_x,
+                pixel_bbox[1] * scale_y,
+                pixel_bbox[2] * scale_x,
+                pixel_bbox[3] * scale_y,
+            )
 
-    # Tolerance: anything more than 15 shades away from background = content
-    tolerance = 15
-    mask = np.abs(gray.astype(int) - bg_color) > tolerance
+            pad = padding_mm * 2.83465
+            bbox = fitz.Rect(bbox.x0 - pad, bbox.y0 - pad, bbox.x1 + pad, bbox.y1 + pad)
+            bbox = bbox & page.rect
 
-    rows = np.any(mask, axis=1)
-    cols = np.any(mask, axis=0)
-
-    if not rows.any() or not cols.any():
-        return None
-
-    top    = int(np.argmax(rows))
-    bottom = int(len(rows) - np.argmax(rows[::-1]))
-    left   = int(np.argmax(cols))
-    right  = int(len(cols) - np.argmax(cols[::-1]))
-
-    mb = page.mediabox
-    return fitz.Rect(
-        mb.x0 + left   / scale,
-        mb.y0 + top    / scale,
-        mb.x0 + right  / scale,
-        mb.y0 + bottom / scale,
-    )
-
-
-def trim_pdf(input_bytes, extra_margin_mm):
-    extra_pts = mm_to_points(extra_margin_mm)
-    trimmed = 0
-    fallback = 0
-
-    doc = fitz.open(stream=input_bytes, filetype="pdf")
-    num_pages = doc.page_count
-
-    for i in range(num_pages):
-        page = doc[i]
-        mb = fitz.Rect(page.mediabox)
-
-        content_rect = get_content_bbox(page)
-
-        if content_rect is None or content_rect.is_empty:
-            fallback += 1
-            continue
-
-        crop = fitz.Rect(
-            max(content_rect.x0 - extra_pts, mb.x0),
-            max(content_rect.y0 - extra_pts, mb.y0),
-            min(content_rect.x1 + extra_pts, mb.x1),
-            min(content_rect.y1 + extra_pts, mb.y1),
-        )
-
-        if crop.width > 1 and crop.height > 1:
-            page.set_cropbox(crop)
-            trimmed += 1
-
-    if fallback > 0:
-        st.warning(f"⚠️ {fallback} עמודים לא זוהו — נשמרו ללא גיזום.")
-
-    out = io.BytesIO()
-    doc.save(out, garbage=4, deflate=True)
-    doc.close()
-    out.seek(0)
-    return out.getvalue(), trimmed
-
-
-st.markdown("---")
-if "pdf_bytes" in st.session_state:
-    st.success(f"✅ קובץ טעון: {st.session_state.get('pdf_name', 'קובץ PDF')}")
-    if st.button("✂️ גזור שוליים", type="primary", use_container_width=True):
-        with st.spinner("מעבד... אנא המתן"):
-            try:
-                output_bytes, trimmed_pages = trim_pdf(
-                    st.session_state["pdf_bytes"],
-                    extra_margin_mm,
+            if bbox.width > 2 and bbox.height > 2:
+                new_page = dst.new_page(width=bbox.width, height=bbox.height)
+                new_page.show_pdf_page(
+                    fitz.Rect(0, 0, bbox.width, bbox.height),
+                    src,
+                    pno,
+                    clip=bbox,
                 )
-                st.success(f"✅ הצלחה! עובדו {trimmed_pages} עמודים.")
-                st.download_button(
-                    label="⬇️ הורד Trimmed_Final.pdf",
-                    data=output_bytes,
-                    file_name="Trimmed_Final.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-            except Exception as e:
-                st.error(f"❌ שגיאה: {e}")
-                st.exception(e)
-else:
-    st.info("📂 אנא העלה קובץ PDF כדי להתחיל.")
+
+            progress_bar.progress((pno + 1) / n)
+
+        if dst.page_count == 0:
+            st.warning("⚠️ לא נמצא תוכן — נסה להוריד את ערך הרגישות.")
+        else:
+            buffer = io.BytesIO()
+            dst.save(buffer, garbage=4, deflate=True)
+            buffer.seek(0)
+            st.success(f"✅ הקובץ עובד בהצלחה! ({dst.page_count} עמודים)")
+            st.download_button(
+                label="⬇️ הורד Trimmed_Final.pdf",
+                data=buffer,
+                file_name="Trimmed_Final.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+    except Exception as e:
+        st.error(f"❌ אירעה שגיאה: {e}")
+        st.exception(e)
