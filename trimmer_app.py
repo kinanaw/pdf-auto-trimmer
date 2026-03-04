@@ -6,8 +6,11 @@ import io
 # Page Config
 st.set_page_config(page_title="Auto PDF Trimmer", page_icon="✂️")
 
+
+# 2. כותרת וקרדיט
 st.title("✂️ Automatic PDF White-Space Trimmer")
-st.markdown("פותח על ידי כינאן עוידאת לשימושכם באהבה.")
+st.markdown("### מוצר זה פותח על ידי כינאן עוידאת, לשימושכם באהבה.")
+
 
 # --- Sidebar Settings ---
 st.sidebar.header("Settings")
