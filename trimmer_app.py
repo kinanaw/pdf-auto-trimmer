@@ -1,285 +1,172 @@
 import streamlit as st
 import fitz  # PyMuPDF
-from PIL import Image
+from PIL import Image, ImageOps
 import io
-import numpy as np
-from typing import Tuple, Optional
-# Disable PIL decompression bomb check
+import tempfile
+import os
+
+# Fix decompression bomb error
 Image.MAX_IMAGE_PIXELS = None
-class PDFTrimmer:
-    def __init__(self):
-        self.doc = None
-        self.extra_margin_mm = 5.0
-        self.sensitivity = 250
-        
-    def mm_to_points(self, mm: float) -> float:
-        """Convert millimeters to PDF points (1mm = 2.83465 points)"""
-        return mm * 2.83465
-    
-    def get_hybrid_bbox(self, page: fitz.Page) -> Optional[fitz.Rect]:
-        """
-        Calculate bounding box using hybrid detection:
-        1. Vector paths and text from get_bboxlog()
-        2. Images from get_image_info()
-        3. Visual pixel analysis as fallback
-        """
-        # Initialize with empty rect
-        union_rect = fitz.Rect()
-        found_content = False
-        
-        # Method 1: Get vector paths, text, and drawings
-        try:
-            bbox_log = page.get_bboxlog()
-            for item in bbox_log:
-                if item.get("rect"):
-                    rect = fitz.Rect(item["rect"])
-                    if not rect.is_empty and rect.is_valid:
-                        if not found_content:
-                            union_rect = rect
-                            found_content = True
-                        else:
-                            union_rect.include_rect(rect)
-        except Exception as e:
-            st.warning(f"⚠️ Vector detection warning: {str(e)}")
-        
-        # Method 2: Get image boundaries
-        try:
-            image_list = page.get_image_info()
-            for img in image_list:
-                if "bbox" in img:
-                    rect = fitz.Rect(img["bbox"])
-                    if not rect.is_empty and rect.is_valid:
-                        if not found_content:
-                            union_rect = rect
-                            found_content = True
-                        else:
-                            union_rect.include_rect(rect)
-        except Exception as e:
-            st.warning(f"⚠️ Image detection warning: {str(e)}")
-        
-        # Method 3: Pixel-based detection as fallback
-        try:
-            # Get pixmap with higher resolution for better detection
-            mat = fitz.Matrix(2.0, 2.0)  # 2x scaling for precision
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            
-            # Convert to PIL Image
-            img_data = pix.pil_tobytes(format="PNG")
-            img = Image.open(io.BytesIO(img_data))
-            
-            # Convert to grayscale numpy array
-            img_gray = img.convert('L')
-            img_array = np.array(img_gray)
-            
-            # Find non-white pixels based on sensitivity
-            non_white = img_array < self.sensitivity
-            
-            if np.any(non_white):
-                # Find bounding box of non-white pixels
-                rows = np.any(non_white, axis=1)
-                cols = np.any(non_white, axis=0)
-                
-                if np.any(rows) and np.any(cols):
-                    ymin, ymax = np.where(rows)[0][[0, -1]]
-                    xmin, xmax = np.where(cols)[0][[0, -1]]
-                    
-                    # Convert pixel coordinates back to PDF coordinates
-                    # Account for the 2x scaling
-                    pixel_rect = fitz.Rect(
-                        xmin / 2.0,
-                        ymin / 2.0,
-                        (xmax + 1) / 2.0,
-                        (ymax + 1) / 2.0
-                    )
-                    
-                    # Transform to page coordinates
-                    page_rect = page.rect
-                    scale_x = page_rect.width / (pix.width / 2.0)
-                    scale_y = page_rect.height / (pix.height / 2.0)
-                    
-                    pixel_rect.x0 = page_rect.x0 + pixel_rect.x0 * scale_x
-                    pixel_rect.y0 = page_rect.y0 + pixel_rect.y0 * scale_y
-                    pixel_rect.x1 = page_rect.x0 + pixel_rect.x1 * scale_x
-                    pixel_rect.y1 = page_rect.y0 + pixel_rect.y1 * scale_y
-                    
-                    if not found_content:
-                        union_rect = pixel_rect
-                        found_content = True
+
+st.set_page_config(page_title="✂️ Kienan PDF Trimmer", layout="centered")
+
+st.title("✂️ Kienan PDF Trimmer")
+st.markdown("❤️ מוצר זה פותח על ידי כינאן עוידאת, לשימושכם באהבה.")
+
+st.markdown("---")
+
+# UI Controls
+uploaded_file = st.file_uploader("העלה קובץ PDF", type=["pdf"])
+extra_margin_mm = st.slider("שוליים נוספים (מ\"מ)", min_value=0, max_value=20, value=3)
+sensitivity = st.slider("רגישות (0=הכל לבן, 255=הכל שחור)", min_value=0, max_value=255, value=240)
+
+
+def mm_to_points(mm):
+    """Convert millimeters to PDF points (1 inch = 72 points, 1 inch = 25.4 mm)."""
+    return mm * 72.0 / 25.4
+
+
+def get_content_bbox_hybrid(page, sensitivity_threshold):
+    """
+    Hybrid detection: combines bboxlog (vectors/text), image_info, and pixel analysis.
+    Returns a fitz.Rect with the bounding box of all content, in page coordinates.
+    """
+    page_rect = page.rect  # Full page rect (MediaBox)
+    content_rect = None
+
+    # --- Method 1: Vector paths, text, drawings via get_bboxlog ---
+    try:
+        bboxlog = page.get_bboxlog()
+        for item in bboxlog:
+            # item is (type, rect) where rect is a fitz.Rect
+            if len(item) >= 2:
+                bbox = fitz.Rect(item[1])
+                if bbox.is_valid and not bbox.is_empty:
+                    if content_rect is None:
+                        content_rect = bbox
                     else:
-                        union_rect.include_rect(pixel_rect)
-                        
-        except Exception as e:
-            st.warning(f"⚠️ Pixel detection warning: {str(e)}")
-        
-        if not found_content:
-            return None
-            
-        return union_rect
-    
-    def trim_pdf(self, pdf_bytes: bytes, extra_margin_mm: float, sensitivity: int) -> Tuple[bool, Optional[bytes], str]:
-        """
-        Trim white margins from PDF using set_cropbox method
-        """
-        self.extra_margin_mm = extra_margin_mm
-        self.sensitivity = sensitivity
-        
-        try:
-            # Open PDF document
-            self.doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            
-            if self.doc.page_count == 0:
-                return False, None, "❌ PDF is empty"
-            
-            # Process each page
-            trimmed_pages = 0
-            for page_num in range(self.doc.page_count):
-                page = self.doc[page_num]
-                
-                # Get hybrid bounding box
-                content_rect = self.get_hybrid_bbox(page)
-                
+                        content_rect.include_rect(bbox)
+    except Exception as e:
+        st.warning(f"get_bboxlog אזהרה: {e}")
+
+    # --- Method 2: Embedded images via get_image_info ---
+    try:
+        image_infos = page.get_image_info(hashes=False, xrefs=False)
+        for img_info in image_infos:
+            bbox = fitz.Rect(img_info.get("bbox", (0, 0, 0, 0)))
+            if bbox.is_valid and not bbox.is_empty:
                 if content_rect is None:
-                    st.info(f"ℹ️ Page {page_num + 1}: No content detected, keeping original")
-                    continue
-                
-                # Add extra margin
-                margin_points = self.mm_to_points(extra_margin_mm)
-                content_rect.x0 -= margin_points
-                content_rect.y0 -= margin_points
-                content_rect.x1 += margin_points
-                content_rect.y1 += margin_points
-                
-                # Get MediaBox for clamping
-                media_box = page.mediabox
-                
-                # Clamp the crop box within MediaBox to avoid errors
-                final_rect = fitz.Rect(
-                    max(content_rect.x0, media_box.x0),
-                    max(content_rect.y0, media_box.y0),
-                    min(content_rect.x1, media_box.x1),
-                    min(content_rect.y1, media_box.y1)
-                )
-                
-                # Ensure the rect is valid
-                if final_rect.is_valid and not final_rect.is_empty:
-                    # Set the CropBox directly on the original page
-                    page.set_cropbox(final_rect)
-                    trimmed_pages += 1
-                    
-                    # Debug info
-                    st.success(f"✅ Page {page_num + 1}: Trimmed successfully")
+                    content_rect = bbox
                 else:
-                    st.warning(f"⚠️ Page {page_num + 1}: Invalid crop area, keeping original")
-            
-            if trimmed_pages == 0:
-                return False, None, "⚠️ No pages were trimmed (no content detected)"
-            
-            # Save the modified document
-            output_buffer = io.BytesIO()
-            self.doc.save(output_buffer)
-            self.doc.close()
-            
-            return True, output_buffer.getvalue(), f"✅ Successfully trimmed {trimmed_pages}/{self.doc.page_count} pages"
-            
-        except Exception as e:
-            if self.doc:
-                self.doc.close()
-            return False, None, f"❌ Error: {str(e)}"
-def main():
-    st.set_page_config(
-        page_title="PDF Trimmer",
-        page_icon="✂️",
-        layout="wide"
-    )
-    
-    # Title and credit
-    st.title("✂️ Kienan PDF Trimmer")
-    st.markdown("❤️ מוצר זה פותח על ידי כינאן עוידאת, לשימושכם באהבה.")
-    
+                    content_rect.include_rect(bbox)
+    except Exception as e:
+        st.warning(f"get_image_info אזהרה: {e}")
+
+    # --- Method 3: Pixel-level analysis (visual fallback) ---
+    try:
+        # Render page at 150 DPI for speed (scale from 72 dpi base)
+        scale = 150 / 72
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img_bytes = pix.tobytes("png")
+        img = Image.open(io.BytesIO(img_bytes)).convert("L")  # Grayscale
+
+        # Find bounding box of non-white pixels
+        # Pixels darker than sensitivity_threshold are "inked"
+        img_inverted = img.point(lambda p: 255 if p < sensitivity_threshold else 0)
+        bbox_pixel = img_inverted.getbbox()
+
+        if bbox_pixel:
+            # bbox_pixel is in pixels at 150 DPI, convert to page points
+            x0 = bbox_pixel[0] / scale + page_rect.x0
+            y0 = bbox_pixel[1] / scale + page_rect.y0
+            x1 = bbox_pixel[2] / scale + page_rect.x0
+            y1 = bbox_pixel[3] / scale + page_rect.y0
+            pixel_rect = fitz.Rect(x0, y0, x1, y1)
+
+            if content_rect is None:
+                content_rect = pixel_rect
+            else:
+                content_rect.include_rect(pixel_rect)
+    except Exception as e:
+        st.warning(f"pixel analysis אזהרה: {e}")
+
+    return content_rect
+
+
+def trim_pdf(input_bytes, extra_margin_mm, sensitivity):
+    """
+    Main trimming function.
+    Uses hybrid detection and set_cropbox to trim each page.
+    """
+    extra_margin_pts = mm_to_points(extra_margin_mm)
+
+    # Load the PDF from bytes
+    doc = fitz.open(stream=input_bytes, filetype="pdf")
+
+    trimmed_pages = 0
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        media_box = page.mediabox  # The true physical page size
+
+        # Get the hybrid content bounding box
+        content_rect = get_content_bbox_hybrid(page, sensitivity)
+
+        if content_rect is None or content_rect.is_empty:
+            st.info(f"עמוד {page_num + 1}: לא נמצא תוכן, הדף נשמר ללא שינוי.")
+            continue
+
+        # Add extra margin around the content
+        final_rect = fitz.Rect(
+            content_rect.x0 - extra_margin_pts,
+            content_rect.y0 - extra_margin_pts,
+            content_rect.x1 + extra_margin_pts,
+            content_rect.y1 + extra_margin_pts,
+        )
+
+        # Clamp final_rect within MediaBox to avoid "CropBox not in MediaBox" errors
+        final_rect.x0 = max(final_rect.x0, media_box.x0)
+        final_rect.y0 = max(final_rect.y0, media_box.y0)
+        final_rect.x1 = min(final_rect.x1, media_box.x1)
+        final_rect.y1 = min(final_rect.y1, media_box.y1)
+
+        # Validate the rect is still meaningful
+        if final_rect.width < 1 or final_rect.height < 1:
+            st.warning(f"עמוד {page_num + 1}: תיבת הגזירה קטנה מדי, הדף נשמר ללא שינוי.")
+            continue
+
+        # Apply CropBox directly on the original page (preserves all layers/metadata)
+        page.set_cropbox(final_rect)
+        trimmed_pages += 1
+
+    # Save to bytes
+    output_buffer = io.BytesIO()
+    doc.save(output_buffer, garbage=4, deflate=True)
+    doc.close()
+    output_buffer.seek(0)
+    return output_buffer.getvalue(), trimmed_pages
+
+
+# --- Main App Logic ---
+if uploaded_file is not None:
     st.markdown("---")
-    
-    # Create columns for better layout
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # File uploader
-        uploaded_file = st.file_uploader(
-            "📄 Choose a PDF file",
-            type=["pdf"],
-            help="Upload the PDF file you want to trim"
-        )
-    
-    with col2:
-        # Settings
-        st.subheader("⚙️ Settings")
-        
-        extra_margin = st.slider(
-            "Extra Margin (mm)",
-            min_value=0.0,
-            max_value=20.0,
-            value=5.0,
-            step=0.5,
-            help="Additional margin to keep around detected content"
-        )
-        
-        sensitivity = st.slider(
-            "Sensitivity (0-255)",
-            min_value=0,
-            max_value=255,
-            value=250,
-            step=5,
-            help="Lower values = more aggressive trimming (detects lighter grays)"
-        )
-    
-    st.markdown("---")
-    
-    if uploaded_file is not None:
-        # Read PDF bytes
-        pdf_bytes = uploaded_file.read()
-        
-        # Display file info
-        st.info(f"📊 File: {uploaded_file.name} | Size: {len(pdf_bytes) / 1024:.1f} KB")
-        
-        # Process button
-        if st.button("🚀 Trim PDF", type="primary", use_container_width=True):
-            with st.spinner("🔄 Processing PDF..."):
-                # Create trimmer instance
-                trimmer = PDFTrimmer()
-                
-                # Process PDF
-                success, output_bytes, message = trimmer.trim_pdf(
-                    pdf_bytes, 
-                    extra_margin, 
-                    sensitivity
+    if st.button("✂️ גזור שוליים", type="primary", use_container_width=True):
+        with st.spinner("מעבד את הקובץ... אנא המתן"):
+            try:
+                input_bytes = uploaded_file.read()
+                output_bytes, trimmed_pages = trim_pdf(input_bytes, extra_margin_mm, sensitivity)
+
+                st.success(f"✅ הצלחה! עובדו {trimmed_pages} עמודים.")
+                st.download_button(
+                    label="⬇️ הורד Trimmed_Final.pdf",
+                    data=output_bytes,
+                    file_name="Trimmed_Final.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
                 )
-                
-                # Display result
-                if success:
-                    st.success(message)
-                    
-                    # Download button
-                    st.download_button(
-                        label="📥 Download Trimmed PDF",
-                        data=output_bytes,
-                        file_name="Trimmed_Final.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
-                else:
-                    st.error(message)
-    else:
-        # Instructions
-        st.info("👆 Please upload a PDF file to begin trimming")
-        
-        with st.expander("ℹ️ How it works"):
-            st.markdown("""
-            This tool uses **hybrid detection** to find content:
-            
-            1. **Vector Analysis**: Detects all paths, text, and drawings
-            2. **Image Detection**: Includes embedded images and scans
-            3. **Pixel Scanning**: Visual fallback for complex elements
-            
-            The tool preserves all layers and metadata by using direct CropBox modification.
-            """)
-if __name__ == "__main__":
-    main()
+            except Exception as e:
+                st.error(f"❌ שגיאה בעיבוד הקובץ: {e}")
+                st.exception(e)
+else:
+    st.info("📂 אנא העלה קובץ PDF כדי להתחיל.")
