@@ -13,7 +13,7 @@ st.title("✂️ Kienan PDF Trimmer")
 st.markdown(
     """
     <div style="font-family: 'David', 'David Libre', serif; font-size: 26px; text-align: center; color: #4A4A4A;">
-        מוצר זה פותח על ידי <b><u>כינאן עוידאת</u></b>, לשימושכם באהבה ❤️.
+        ❤️ מוצר זה פותח על ידי <b><u>כינאן עוידאת</u></b>, לשימושכם באהבה .
     </div>
     """,
     unsafe_allow_html=True
@@ -101,3 +101,4 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"אירעה שגיאה בעיבוד: {e}")
+
