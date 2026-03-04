@@ -23,21 +23,21 @@ if uploaded_file:
         progress_bar = st.progress(0)
         trimmed = 0
 
-        TARGET_PX = 1500  # פיקסלים על הציר הארוך — מספיק לזיהוי, לא נתקע
+        TARGET_SHORT = 800  # פיקסלים על הצלע הקצרה — מבטיח רזולוציה מספקת
 
         for pno in range(n):
             page = doc[pno]
             mb = fitz.Rect(page.mediabox)
 
-            # scale לפי הצלע הארוכה של הדף הספציפי
-            longest_side = max(mb.width, mb.height)
-            scale = TARGET_PX / longest_side
+            # scale לפי הצלע הקצרה — כך שהרוחב תמיד יהיה לפחות 800px
+            shortest_side = min(mb.width, mb.height)
+            scale = TARGET_SHORT / shortest_side
             mat = fitz.Matrix(scale, scale)
 
             pix = page.get_pixmap(matrix=mat, alpha=False)
             img = Image.open(io.BytesIO(pix.tobytes())).convert("L")
 
-            # הרחבת קווים דקים — חשוב לשרטוטי CAD
+            # הרחבת קווים דקים
             img_d = img.filter(ImageFilter.MinFilter(3))
 
             bw = img_d.point(lambda x: 0 if x > sensitivity else 255)
@@ -47,7 +47,6 @@ if uploaded_file:
                 progress_bar.progress((pno + 1) / n)
                 continue
 
-            # המרה חזרה לקואורדינטות PDF
             crop = fitz.Rect(
                 mb.x0 + pixel_bbox[0] / scale,
                 mb.y0 + pixel_bbox[1] / scale,
@@ -62,7 +61,6 @@ if uploaded_file:
                 crop.x1 + pad,
                 crop.y1 + pad,
             )
-
             crop = crop & mb
 
             if crop.width > 2 and crop.height > 2:
