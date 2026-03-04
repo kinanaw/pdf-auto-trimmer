@@ -17,7 +17,7 @@ st.markdown(
     """, 
     unsafe_allow_html=True
 )
-st.write("---")קו מפריד עיצובי
+st.write("---")
 
 
 # --- Sidebar Settings ---
@@ -95,3 +95,4 @@ if uploaded_file:
             mime="application/pdf",
             use_container_width=True
         )
+
