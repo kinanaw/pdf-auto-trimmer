@@ -21,13 +21,14 @@ def mm_to_points(mm):
 
 
 def get_content_bbox_pixels(page, white_threshold):
+    # Render via the page's own coordinate system (clip=page.rect)
     scale = 150 / 72
     mat = fitz.Matrix(scale, scale)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
-    arr = np.array(img)
+    pix = page.get_pixmap(matrix=mat, alpha=False, clip=page.rect)
+    arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    gray = arr.mean(axis=2)  # average RGB → grayscale
 
-    mask = arr < white_threshold
+    mask = gray < white_threshold
     rows = np.any(mask, axis=1)
     cols = np.any(mask, axis=0)
 
@@ -39,12 +40,13 @@ def get_content_bbox_pixels(page, white_threshold):
     left   = int(np.argmax(cols))
     right  = int(len(cols) - np.argmax(cols[::-1]))
 
+    # Convert pixels → page points (page.rect already normalized)
     pr = page.rect
     return fitz.Rect(
-        left   / scale + pr.x0,
-        top    / scale + pr.y0,
-        right  / scale + pr.x0,
-        bottom / scale + pr.y0,
+        pr.x0 + left   / scale,
+        pr.y0 + top    / scale,
+        pr.x0 + right  / scale,
+        pr.y0 + bottom / scale,
     )
 
 
@@ -54,37 +56,41 @@ def trim_pdf(input_bytes, extra_margin_mm, sensitivity):
     src = fitz.open(stream=input_bytes, filetype="pdf")
     out_doc = fitz.open()
     trimmed = 0
-    fallback = 0
 
     for i in range(src.page_count):
         src_page = src[i]
-        media_box = fitz.Rect(src_page.mediabox)
+        # Use page.rect (already accounts for rotation/offsets)
+        pr = fitz.Rect(src_page.rect)
 
         content_rect = get_content_bbox_pixels(src_page, sensitivity)
 
-        if content_rect is None or content_rect.is_empty:
-            # Fallback: keep full page instead of skipping
-            content_rect = media_box
-            fallback += 1
+        # Fallback to full page if detection fails
+        if content_rect is None or content_rect.is_empty or not content_rect.is_valid:
+            content_rect = pr
 
+        # Build crop rect with margin, clamped to page bounds
         crop = fitz.Rect(
-            max(content_rect.x0 - extra_pts, media_box.x0),
-            max(content_rect.y0 - extra_pts, media_box.y0),
-            min(content_rect.x1 + extra_pts, media_box.x1),
-            min(content_rect.y1 + extra_pts, media_box.y1),
+            max(content_rect.x0 - extra_pts, pr.x0),
+            max(content_rect.y0 - extra_pts, pr.y0),
+            min(content_rect.x1 + extra_pts, pr.x1),
+            min(content_rect.y1 + extra_pts, pr.y1),
         )
 
-        new_page = out_doc.new_page(width=crop.width, height=crop.height)
-        new_page.show_pdf_page(
-            fitz.Rect(0, 0, crop.width, crop.height),
-            src,
-            i,
-            clip=crop,
-        )
+        # Safety check
+        w = crop.x1 - crop.x0
+        h = crop.y1 - crop.y0
+        if w <= 0 or h <= 0:
+            crop = pr
+            w = crop.x1 - crop.x0
+            h = crop.y1 - crop.y0
+
+        # New page sized exactly to cropped content
+        new_page = out_doc.new_page(width=w, height=h)
+
+        # Map cropped source area → full new page
+        dest = fitz.Rect(0, 0, w, h)
+        new_page.show_pdf_page(dest, src, i, clip=crop)
         trimmed += 1
-
-    if fallback > 0:
-        st.warning(f"⚠️ {fallback} עמודים לא זוהו — נשמרו ללא גיזום. נסה להוריד את ערך הרגישות.")
 
     out = io.BytesIO()
     out_doc.save(out, garbage=4, deflate=True)
