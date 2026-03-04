@@ -92,3 +92,4 @@ if uploaded_file:
         st.error(f"אירעה שגיאה: {e}")
 
 
+
