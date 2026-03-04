@@ -19,6 +19,7 @@ st.markdown(
 )
 st.write("---")קו מפריד עיצובי
 
+
 # --- Sidebar Settings ---
 st.sidebar.header("Settings")
 padding = st.sidebar.slider("Margin Padding (pixels)", 0, 100, 20, help="Adds a little breathing room around the ink.")
@@ -94,5 +95,3 @@ if uploaded_file:
             mime="application/pdf",
             use_container_width=True
         )
-
-
