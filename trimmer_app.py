@@ -1,3 +1,11 @@
+נראה שהגענו לנקודה שבה הפונקציה show_pdf_page קורסת בגלל שהיא מקבלת ערכים לא תקינים לתיבת החיתוך (clip). זה קורה בדרך כלל כשה-crop_rect שחישבנו הוא "הפוך" (למשל צד ימין קטן מצד שמאל) או כשהוא מכיל ערכים שהם NaN או אינסוף.
+
+כדי להשיג Inked Area אמיתי בלי קריסות, אנחנו צריכים להשתמש בשיטה הכי יציבה של PyMuPDF שנקראת get_bbox(). בגרסאות החדשות (כמו זו שמותקנת אצלך ב-Streamlit Cloud), הפונקציה הזו מחזירה את המלבן המדויק של התוכן הנראה.
+
+הקוד הסופי והחסין ביותר ל-Inked Area:
+החלף את כל הקוד ב-GitHub בגרסה הזו. הוספתי לה "מנגנון הגנה" שבודק שהתיבה תקינה לפני שהוא מנסה לחתוך.
+
+Python
 import streamlit as st
 import fitz  # PyMuPDF
 import io
@@ -5,7 +13,7 @@ import io
 st.set_page_config(page_title="PDF Inked-Area Trimmer", page_icon="✂️", layout="wide")
 
 st.title("✂️ PDF Inked-Area Trimmer")
-st.markdown("התמקדות בתוכן בלבד (Inked Area) והסרת כל השטח הלבן המיותר.")
+st.markdown("פותח ע"י כינאן עוידאת, לשימושכם באהבה.")
 
 # Sidebar
 padding = st.sidebar.slider("Padding (points)", 0, 100, 20)
@@ -20,58 +28,55 @@ if uploaded_files:
             out_doc = fitz.open()
             
             for page in src_doc:
-                # שיפור הזיהוי: נשתמש בשיטה שמחפשת תוכן נראה בלבד
-                # get_bbox() מחזירה את המלבן המינימלי שמכיל את כל ה"דיו" (טקסט, קווים, תמונות)
-                try:
-                    # בגרסאות חדשות זו השיטה המדויקת ביותר ל-Inked Area
-                    content_rect = page.get_bbox() 
-                except AttributeError:
-                    # גיבוי לגרסאות ישנות יותר - איסוף ידני של התיבה
-                    content_rect = page.rect
-                    # מחפש את התיבה המקיפה את כל התוכן הנראה
-                    visible_box = page.get_bboxlog()
-                    if visible_box:
-                        full_rect = fitz.Rect()
-                        for item in visible_box:
-                            full_rect.include_rect(fitz.Rect(item[1]))
-                        content_rect = full_rect
-
-                if content_rect and not content_rect.is_empty:
-                    # הגדרת התיבה החתוכה עם ה-Padding
+                # 1. מציאת התיבה של התוכן הנראה (Inked Area)
+                # בגרסאות חדשות, page.get_bbox() הוא הכלי הכי חזק למשימה
+                rect = page.get_bbox()
+                
+                # אם הדף לא ריק ויש בו תוכן
+                if rect and rect.width > 0 and rect.height > 0:
+                    # הוספת Padding בזהירות
                     crop_rect = fitz.Rect(
-                        content_rect.x0 - padding,
-                        content_rect.y0 - padding,
-                        content_rect.x1 + padding,
-                        content_rect.y1 + padding
+                        rect.x0 - padding,
+                        rect.y0 - padding,
+                        rect.x1 + padding,
+                        rect.y1 + padding
                     )
                     
-                    # יצירת עמוד חדש בגודל ה-Inked Area בלבד
+                    # 2. יצירת עמוד חדש בגודל התיבה שחישבנו
                     new_page = out_doc.new_page(width=crop_rect.width, height=crop_rect.height)
                     
-                    # מטריצת הזזה כדי שהפינה של הדיו תהיה ב-(0,0) של העמוד החדש
+                    # 3. יצירת מטריצת הזזה (Matrix)
+                    # המטריצה מזיזה את התוכן כך שהפינה של ה-Inked Area תהיה ב-(0,0)
                     mat = fitz.Matrix(1, 1).pretranslate(-crop_rect.x0, -crop_rect.y0)
                     
-                    # העתקה כירורגית של התוכן
-                    new_page.show_pdf_page(
-                        new_page.rect,
-                        src_doc,
-                        page.number,
-                        matrix=mat,
-                        clip=crop_rect
-                    )
+                    # 4. העתקת התוכן לעמוד החדש
+                    try:
+                        new_page.show_pdf_page(
+                            new_page.rect,   # גודל העמוד החדש
+                            src_doc,         # מסמך המקור
+                            page.number,     # מספר העמוד
+                            matrix=mat,      # הזזה ל-(0,0)
+                            clip=crop_rect   # חיתוך המקור
+                        )
+                    except Exception as e:
+                        # אם החיתוך נכשל מסיבה כלשהי, ניצור עמוד רגיל כדי לא לתקוע את התהליך
+                        st.warning(f"בעיה בעמוד {page.number + 1}: {e}")
+                        new_page_err = out_doc.new_page(width=page.rect.width, height=page.rect.height)
+                        new_page_err.show_pdf_page(new_page_err.rect, src_doc, page.number)
                 else:
-                    # אם העמוד באמת ריק לגמרי
-                    new_page = out_doc.new_page(width=100, height=100) # עמוד קטן ריק
+                    # אם העמוד ריק לגמרי, פשוט נעתיק אותו כפי שהוא
+                    new_page_blank = out_doc.new_page(width=page.rect.width, height=page.rect.height)
+                    new_page_blank.show_pdf_page(new_page_blank.rect, src_doc, page.number)
 
             # שמירה
             output_buffer = io.BytesIO()
-            out_doc.save(output_buffer, garbage=4, deflate=True)
+            out_doc.save(output_buffer, garbage=4, deflate=True, clean=True)
             
             st.success(f"הסתיים: {uploaded_file.name}")
             st.download_button(
-                label=f"הורד קובץ (Inked Only): {uploaded_file.name}",
+                label=f"הורד קובץ חתוך: {uploaded_file.name}",
                 data=output_buffer.getvalue(),
-                file_name=f"inked_{uploaded_file.name}",
+                file_name=f"trimmed_{uploaded_file.name}",
                 mime="application/pdf",
                 key=f"dl_{uploaded_file.name}"
             )
