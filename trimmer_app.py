@@ -1,7 +1,8 @@
 import streamlit as st
-import fitz  # PyMuPDF
+import fitz
 from PIL import Image
 import io
+import numpy as np
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -12,72 +13,85 @@ st.markdown("---")
 
 uploaded_file = st.file_uploader("העלה קובץ PDF", type=["pdf"])
 extra_margin_mm = st.slider('שוליים נוספים (מ"מ)', min_value=0, max_value=20, value=3)
-sensitivity = st.slider("רגישות (0=הכל לבן, 255=הכל שחור)", min_value=0, max_value=255, value=240)
+sensitivity = st.slider("רגישות — סף לבן", min_value=150, max_value=254, value=230)
 
 
 def mm_to_points(mm):
     return mm * 72.0 / 25.4
 
 
-def get_content_bbox_pixels(page, sensitivity_threshold):
-    scale = 200 / 72  # 200 DPI
+def get_content_bbox_pixels(page, white_threshold):
+    scale = 150 / 72
     mat = fitz.Matrix(scale, scale)
     pix = page.get_pixmap(matrix=mat, alpha=False)
     img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
+    arr = np.array(img)
 
-    img_bin = img.point(lambda p: 255 if p < sensitivity_threshold else 0)
-    bb = img_bin.getbbox()
+    mask = arr < white_threshold
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
 
-    if bb is None:
+    if not rows.any():
         return None
+
+    top    = int(np.argmax(rows))
+    bottom = int(len(rows) - np.argmax(rows[::-1]))
+    left   = int(np.argmax(cols))
+    right  = int(len(cols) - np.argmax(cols[::-1]))
 
     pr = page.rect
     return fitz.Rect(
-        bb[0] / scale + pr.x0,
-        bb[1] / scale + pr.y0,
-        bb[2] / scale + pr.x0,
-        bb[3] / scale + pr.y0,
+        left   / scale + pr.x0,
+        top    / scale + pr.y0,
+        right  / scale + pr.x0,
+        bottom / scale + pr.y0,
     )
 
 
 def trim_pdf(input_bytes, extra_margin_mm, sensitivity):
     extra_pts = mm_to_points(extra_margin_mm)
+
+    src = fitz.open(stream=input_bytes, filetype="pdf")
+    out_doc = fitz.open()  # new empty PDF
     trimmed = 0
 
-    doc = fitz.open(stream=input_bytes, filetype="pdf")
-    num_pages = doc.page_count
+    for i in range(src.page_count):
+        src_page = src[i]
+        media_box = fitz.Rect(src_page.mediabox)
 
-    for i in range(num_pages):
-        page = doc[i]
-        media_box = fitz.Rect(page.mediabox)
-
-        content_rect = get_content_bbox_pixels(page, sensitivity)
+        content_rect = get_content_bbox_pixels(src_page, sensitivity)
 
         if content_rect is None or content_rect.is_empty:
-            st.info(f"עמוד {i + 1}: דף ריק — נשמר ללא שינוי.")
+            st.info(f"עמוד {i + 1}: דף ריק — מדולג.")
             continue
 
-        final_rect = fitz.Rect(
-            content_rect.x0 - extra_pts,
-            content_rect.y0 - extra_pts,
-            content_rect.x1 + extra_pts,
-            content_rect.y1 + extra_pts,
+        # Add margin and clamp
+        crop = fitz.Rect(
+            max(content_rect.x0 - extra_pts, media_box.x0),
+            max(content_rect.y0 - extra_pts, media_box.y0),
+            min(content_rect.x1 + extra_pts, media_box.x1),
+            min(content_rect.y1 + extra_pts, media_box.y1),
         )
 
-        final_rect.x0 = max(final_rect.x0, media_box.x0)
-        final_rect.y0 = max(final_rect.y0, media_box.y0)
-        final_rect.x1 = min(final_rect.x1, media_box.x1)
-        final_rect.y1 = min(final_rect.y1, media_box.y1)
-
-        if final_rect.width < 1 or final_rect.height < 1:
+        if crop.width < 1 or crop.height < 1:
             continue
 
-        page.set_cropbox(final_rect)
+        # Create new page exactly the size of the cropped content
+        new_page = out_doc.new_page(width=crop.width, height=crop.height)
+
+        # Copy content from source page into new page using show_pdf_page
+        new_page.show_pdf_page(
+            fitz.Rect(0, 0, crop.width, crop.height),  # destination: full new page
+            src,
+            i,
+            clip=crop,  # source: only the cropped area
+        )
         trimmed += 1
 
     out = io.BytesIO()
-    doc.save(out, garbage=4, deflate=True)
-    doc.close()
+    out_doc.save(out, garbage=4, deflate=True)
+    out_doc.close()
+    src.close()
     out.seek(0)
     return out.getvalue(), trimmed
 
