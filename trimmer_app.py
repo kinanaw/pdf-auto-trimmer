@@ -10,8 +10,8 @@ st.title("✂️ Kienan PDF Trimmer")
 st.markdown("❤️ מוצר זה פותח על ידי כינאן עוידאת, לשימושכם באהבה.")
 st.markdown("---")
 
-padding_mm  = st.sidebar.slider('שוליים נוספים (מ"מ)', 0.0, 20.0, 1.0, 0.5)
-sensitivity = st.sidebar.slider("רגישות (נמוך = אגרסיבי)", 200, 255, 245, 1)
+padding_mm  = st.sidebar.slider('שוליים נוספים (מ"מ)', 0.0, 20.0, 2.0, 0.5)
+sensitivity = st.sidebar.slider("רגישות (נמוך = אגרסיבי)", 180, 254, 240, 1)
 
 uploaded_file = st.file_uploader("📂 העלה קובץ PDF", type="pdf")
 
@@ -23,32 +23,36 @@ if uploaded_file:
         progress_bar = st.progress(0)
         trimmed = 0
 
+        TARGET_PX = 1500  # פיקסלים על הציר הארוך — מספיק לזיהוי, לא נתקע
+
         for pno in range(n):
             page = doc[pno]
             mb = fitz.Rect(page.mediabox)
 
-            # DPI 72 מהיר — אבל מרחיבים קווים דקים לפני זיהוי
-            pix = page.get_pixmap(dpi=72)
+            # scale לפי הצלע הארוכה של הדף הספציפי
+            longest_side = max(mb.width, mb.height)
+            scale = TARGET_PX / longest_side
+            mat = fitz.Matrix(scale, scale)
+
+            pix = page.get_pixmap(matrix=mat, alpha=False)
             img = Image.open(io.BytesIO(pix.tobytes())).convert("L")
 
-            # הרחבת קווים דקים (dilate) — קווי CAD דקים יהפכו גדולים יותר
-            img_dilated = img.filter(ImageFilter.MinFilter(3))
+            # הרחבת קווים דקים — חשוב לשרטוטי CAD
+            img_d = img.filter(ImageFilter.MinFilter(3))
 
-            bw = img_dilated.point(lambda x: 0 if x > sensitivity else 255)
+            bw = img_d.point(lambda x: 0 if x > sensitivity else 255)
             pixel_bbox = bw.getbbox()
 
             if not pixel_bbox:
                 progress_bar.progress((pno + 1) / n)
                 continue
 
-            scale_x = mb.width  / pix.width
-            scale_y = mb.height / pix.height
-
+            # המרה חזרה לקואורדינטות PDF
             crop = fitz.Rect(
-                mb.x0 + pixel_bbox[0] * scale_x,
-                mb.y0 + pixel_bbox[1] * scale_y,
-                mb.x0 + pixel_bbox[2] * scale_x,
-                mb.y0 + pixel_bbox[3] * scale_y,
+                mb.x0 + pixel_bbox[0] / scale,
+                mb.y0 + pixel_bbox[1] / scale,
+                mb.x0 + pixel_bbox[2] / scale,
+                mb.y0 + pixel_bbox[3] / scale,
             )
 
             pad = padding_mm * 2.83465
