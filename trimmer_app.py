@@ -2,13 +2,11 @@ import streamlit as st
 import fitz  # PyMuPDF
 import io
 
-# הגדרות דף
 st.set_page_config(page_title="PDF Multi-Trimmer", page_icon="✂️", layout="wide")
 
-st.title("✂️ PDF Multi-Trimmer (גרסה יציבה סופית)")
-st.markdown("חיתוך שוליים אוטומטי. גרסה זו כוללת תיקון מתמטי למערכות צירים מורכבות ב-PDF.")
+st.title("✂️ PDF Multi-Trimmer (גרסת המרה נקייה)")
+st.markdown("חיתוך שוליים בשיטת 'העתקה נקייה' למניעת שגיאות במערכות צירים מורכבות.")
 
-# תפריט צד
 padding = st.sidebar.slider("Padding (points)", 0, 100, 20)
 
 uploaded_files = st.file_uploader("גרור לכאן קבצי PDF", type="pdf", accept_multiple_files=True)
@@ -17,46 +15,42 @@ if uploaded_files:
     for uploaded_file in uploaded_files:
         with st.expander(f"מעבד את: {uploaded_file.name}", expanded=True):
             file_bytes = uploaded_file.read()
-            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            src_doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            for page in doc:
-                # 1. קבלת גבולות הדף המדויקים (MediaBox)
-                m = page.rect  # זהו ה-MediaBox
-                
-                # 2. מציאת התוכן
+            # יצירת מסמך חדש לגמרי
+            out_doc = fitz.open()
+            
+            for page in src_doc:
+                # מציאת תיבת התוכן
                 content_box = page.get_bboxlog()
                 if content_box:
                     full_rect = fitz.Rect()
                     for item in content_box:
                         full_rect.include_rect(fitz.Rect(item[1]))
                     
-                    # 3. חישוב נקודות החיתוך החדשות עם Padding
-                    x0 = full_rect.x0 - padding
-                    y0 = full_rect.y0 - padding
-                    x1 = full_rect.x1 + padding
-                    y1 = full_rect.y1 + padding
-                    
-                    # 4. התיקון הקריטי: מניעת חריגה מה-MediaBox המקורי
-                    # אנחנו "נועלים" את הערכים בתוך הטווח של m
-                    x0 = max(m.x0, min(x0, m.x1))
-                    y0 = max(m.y0, min(y0, m.y1))
-                    x1 = max(m.x0, min(x1, m.x1))
-                    y1 = max(m.y0, min(y1, m.y1))
-                    
-                    # יצירת התיבה הסופית
+                    # הוספת Padding
+                    x0, y0, x1, y1 = full_rect.x0-padding, full_rect.y0-padding, full_rect.x1+padding, full_rect.y1+padding
                     final_rect = fitz.Rect(x0, y0, x1, y1)
                     
-                    # וידוא שהתיבה תקינה (רוחב וגובה חיוביים)
-                    if not final_rect.is_empty and final_rect.width > 0 and final_rect.height > 0:
-                        try:
-                            page.set_cropbox(final_rect)
-                        except Exception:
-                            # אם עדיין יש שגיאה, ננסה להשתמש ב-Intersection של הספריה כגיבוי
-                            page.set_cropbox(final_rect & m)
+                    # יצירת עמוד חדש במסמך הפלט בגודל המדויק של החיתוך
+                    new_page = out_doc.new_page(width=final_rect.width, height=final_rect.height)
+                    
+                    # העתקת התוכן מהעמוד המקורי לעמוד החדש תוך "הזזה" ל-0,0
+                    # זה מבטל את כל בעיות ה-MediaBox
+                    new_page.show_pdf_page(
+                        new_page.rect,      # היכן להציג בעמוד החדש (כל העמוד)
+                        src_doc,            # מסמך המקור
+                        page.number,        # מספר העמוד
+                        clip=final_rect     # מה לחתוך מהמקור
+                    )
+                else:
+                    # אם העמוד ריק, פשוט נעתיק אותו כמו שהוא
+                    new_page = out_doc.new_page(width=page.rect.width, height=page.rect.height)
+                    new_page.show_pdf_page(new_page.rect, src_doc, page.number)
 
             # שמירה
             output_buffer = io.BytesIO()
-            doc.save(output_buffer, garbage=4, deflate=True, clean=True)
+            out_doc.save(output_buffer, garbage=4, deflate=True)
             
             st.success(f"הסתיים: {uploaded_file.name}")
             st.download_button(
