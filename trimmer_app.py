@@ -27,9 +27,9 @@ uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file:
     try:
+        # פותחים את הקובץ המקורי לעריכה ישירה
         src = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        dst = fitz.open()
-
+        
         progress_bar = st.progress(0)
         
         for pno, page in enumerate(src):
@@ -37,57 +37,44 @@ if uploaded_file:
             pix = page.get_pixmap(dpi=dpi_value)
             img = Image.open(io.BytesIO(pix.tobytes()))
             
-            # 2. ניתוח ויזואלי למציאת תוכן (Bounding Box)
+            # 2. ניתוח ויזואלי למציאת תוכן
             gray_img = img.convert("L")
             bw_mask = gray_img.point(lambda x: 0 if x > sensitivity else 255)
             pixel_bbox = bw_mask.getbbox()
 
-            # אם לא נמצא תוכן (דף לבן), פשוט תעתיק את הדף המקורי ותמשיך
             if not pixel_bbox:
-                dst.insert_pdf(src, from_page=pno, to_page=pno)
                 continue
 
-            # 3. המרה לקואורדינטות PDF
+            # 3. המרה לקואורדינטות PDF תוך התחשבות בנקודת המוצא של הדף
+            # חשוב: יש להוסיף את x0 ו-y0 של page.rect למקרה שהדף לא מתחיל ב-0
             scale_x = page.rect.width / pix.width
             scale_y = page.rect.height / pix.height
             
-            # יצירת מלבן זיהוי ראשוני
             fitz_bbox = fitz.Rect(
-                pixel_bbox[0] * scale_x,
-                pixel_bbox[1] * scale_y,
-                pixel_bbox[2] * scale_x,
-                pixel_bbox[3] * scale_y
+                page.rect.x0 + (pixel_bbox[0] * scale_x),
+                page.rect.y0 + (pixel_bbox[1] * scale_y),
+                page.rect.x0 + (pixel_bbox[2] * scale_x),
+                page.rect.y0 + (pixel_bbox[3] * scale_y)
             )
 
             # 4. הוספת שוליים
             pad = padding_mm * 2.83465
-            crop_rect = fitz.Rect(
-                fitz_bbox.x0 - pad,
-                fitz_bbox.y0 - pad,
-                fitz_bbox.x1 + pad,
-                fitz_bbox.y1 + pad
-            )
+            fitz_bbox.x0 -= pad
+            fitz_bbox.y0 -= pad
+            fitz_bbox.x1 += pad
+            fitz_bbox.y1 += pad
             
-            # וודוא שהחיתוך לא חורג מגבולות הדף ולא הופך ל-None
-            final_rect = crop_rect & page.rect
-
-            # 5. יצירת דף חדש והעתקה - בדיקת תקינות המלבן (מניעת AttributeError)
-            if final_rect and not final_rect.is_empty and final_rect.width > 1 and final_rect.height > 1:
-                new_page = dst.new_page(width=final_rect.width, height=final_rect.height)
-                new_page.show_pdf_page(
-                    new_page.rect,   
-                    src,             
-                    pno,             
-                    clip=final_rect   
-                )
-            else:
-                # הגנה: אם המלבן לא תקין, תכניס דף מקורי
-                dst.insert_pdf(src, from_page=pno, to_page=pno)
+            # 5. שינוי גבולות הדף הקיים (השיטה הבטוחה ביותר)
+            # אנחנו מגדירים את ה-CropBox וה-MediaBox להיות בדיוק אזור התוכן
+            page.set_cropbox(fitz_bbox)
+            page.set_mediabox(fitz_bbox)
             
             progress_bar.progress((pno + 1) / len(src))
 
+        # שמירה של הקובץ המקורי שעבר מודיפיקציה
         buffer = io.BytesIO()
-        dst.save(buffer)
+        # שימוש ב-garbage=4 ו-deflate=True כדי להקטין גודל קובץ
+        src.save(buffer, garbage=4, deflate=True)
         buffer.seek(0)
 
         st.success("הקובץ עובד בהצלחה!")
@@ -101,4 +88,3 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"אירעה שגיאה בעיבוד: {e}")
-
