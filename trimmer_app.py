@@ -13,7 +13,7 @@ st.markdown("---")
 
 uploaded_file = st.file_uploader("העלה קובץ PDF", type=["pdf"])
 extra_margin_mm = st.slider('שוליים נוספים (מ"מ)', min_value=0, max_value=20, value=3)
-sensitivity = st.slider("רגישות — סף לבן", min_value=150, max_value=254, value=230)
+sensitivity = st.slider("רגישות — סף לבן", min_value=150, max_value=254, value=200)
 
 
 def mm_to_points(mm):
@@ -31,7 +31,7 @@ def get_content_bbox_pixels(page, white_threshold):
     rows = np.any(mask, axis=1)
     cols = np.any(mask, axis=0)
 
-    if not rows.any():
+    if not rows.any() or not cols.any():
         return None
 
     top    = int(np.argmax(rows))
@@ -52,8 +52,9 @@ def trim_pdf(input_bytes, extra_margin_mm, sensitivity):
     extra_pts = mm_to_points(extra_margin_mm)
 
     src = fitz.open(stream=input_bytes, filetype="pdf")
-    out_doc = fitz.open()  # new empty PDF
+    out_doc = fitz.open()
     trimmed = 0
+    fallback = 0
 
     for i in range(src.page_count):
         src_page = src[i]
@@ -62,10 +63,10 @@ def trim_pdf(input_bytes, extra_margin_mm, sensitivity):
         content_rect = get_content_bbox_pixels(src_page, sensitivity)
 
         if content_rect is None or content_rect.is_empty:
-            st.info(f"עמוד {i + 1}: דף ריק — מדולג.")
-            continue
+            # Fallback: keep full page instead of skipping
+            content_rect = media_box
+            fallback += 1
 
-        # Add margin and clamp
         crop = fitz.Rect(
             max(content_rect.x0 - extra_pts, media_box.x0),
             max(content_rect.y0 - extra_pts, media_box.y0),
@@ -73,20 +74,17 @@ def trim_pdf(input_bytes, extra_margin_mm, sensitivity):
             min(content_rect.y1 + extra_pts, media_box.y1),
         )
 
-        if crop.width < 1 or crop.height < 1:
-            continue
-
-        # Create new page exactly the size of the cropped content
         new_page = out_doc.new_page(width=crop.width, height=crop.height)
-
-        # Copy content from source page into new page using show_pdf_page
         new_page.show_pdf_page(
-            fitz.Rect(0, 0, crop.width, crop.height),  # destination: full new page
+            fitz.Rect(0, 0, crop.width, crop.height),
             src,
             i,
-            clip=crop,  # source: only the cropped area
+            clip=crop,
         )
         trimmed += 1
+
+    if fallback > 0:
+        st.warning(f"⚠️ {fallback} עמודים לא זוהו — נשמרו ללא גיזום. נסה להוריד את ערך הרגישות.")
 
     out = io.BytesIO()
     out_doc.save(out, garbage=4, deflate=True)
