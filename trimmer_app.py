@@ -20,22 +20,16 @@ def mm_to_points(mm):
 
 
 def get_content_bbox_pixels(page, sensitivity_threshold):
-    """
-    Pure pixel-based detection at 200 DPI.
-    Renders the full page and finds bounding box of all non-white pixels.
-    Most reliable method - ignores invisible/metadata vectors that bloat the bbox.
-    """
     scale = 200 / 72  # 200 DPI
     mat = fitz.Matrix(scale, scale)
     pix = page.get_pixmap(matrix=mat, alpha=False)
     img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
 
-    # Pixels darker than threshold = "inked"
     img_bin = img.point(lambda p: 255 if p < sensitivity_threshold else 0)
-    bb = img_bin.getbbox()  # (left, top, right, bottom) in pixels
+    bb = img_bin.getbbox()
 
     if bb is None:
-        return None  # blank page
+        return None
 
     pr = page.rect
     return fitz.Rect(
@@ -70,7 +64,6 @@ def trim_pdf(input_bytes, extra_margin_mm, sensitivity):
             content_rect.y1 + extra_pts,
         )
 
-        # Clamp strictly within MediaBox
         final_rect.x0 = max(final_rect.x0, media_box.x0)
         final_rect.y0 = max(final_rect.y0, media_box.y0)
         final_rect.x1 = min(final_rect.x1, media_box.x1)
@@ -89,7 +82,6 @@ def trim_pdf(input_bytes, extra_margin_mm, sensitivity):
     return out.getvalue(), trimmed
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 if uploaded_file is not None:
     st.markdown("---")
     if st.button("✂️ גזור שוליים", type="primary", use_container_width=True):
