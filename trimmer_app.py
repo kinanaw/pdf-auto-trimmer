@@ -27,7 +27,7 @@ uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file:
     try:
-        # פותחים את הקובץ המקורי לעריכה ישירה
+        # פותחים את הקובץ המקורי
         src = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         
         progress_bar = st.progress(0)
@@ -45,35 +45,41 @@ if uploaded_file:
             if not pixel_bbox:
                 continue
 
-            # 3. המרה לקואורדינטות PDF תוך התחשבות בנקודת המוצא של הדף
-            # חשוב: יש להוסיף את x0 ו-y0 של page.rect למקרה שהדף לא מתחיל ב-0
-            scale_x = page.rect.width / pix.width
-            scale_y = page.rect.height / pix.height
+            # 3. המרה לקואורדינטות PDF תוך התחשבות ב-MediaBox של הדף
+            # שימוש ב-MediaBox מבטיח שאנחנו מתייחסים לממדים האמיתיים של הקובץ
+            mb = page.mediabox
+            scale_x = mb.width / pix.width
+            scale_y = mb.height / pix.height
             
+            # חישוב המלבן ביחס לנקודת ההתחלה של הדף
             fitz_bbox = fitz.Rect(
-                page.rect.x0 + (pixel_bbox[0] * scale_x),
-                page.rect.y0 + (pixel_bbox[1] * scale_y),
-                page.rect.x0 + (pixel_bbox[2] * scale_x),
-                page.rect.y0 + (pixel_bbox[3] * scale_y)
+                mb.x0 + (pixel_bbox[0] * scale_x),
+                mb.y0 + (pixel_bbox[1] * scale_y),
+                mb.x0 + (pixel_bbox[2] * scale_x),
+                mb.y0 + (pixel_bbox[3] * scale_y)
             )
 
-            # 4. הוספת שוליים
+            # 4. הוספת שוליים (Padding)
             pad = padding_mm * 2.83465
             fitz_bbox.x0 -= pad
             fitz_bbox.y0 -= pad
             fitz_bbox.x1 += pad
             fitz_bbox.y1 += pad
             
-            # 5. שינוי גבולות הדף הקיים (השיטה הבטוחה ביותר)
-            # אנחנו מגדירים את ה-CropBox וה-MediaBox להיות בדיוק אזור התוכן
-            page.set_cropbox(fitz_bbox)
-            page.set_mediabox(fitz_bbox)
+            # 5. תיקון קריטי: Clamping
+            # מוודא שה-CropBox החדש מוכל בתוך ה-MediaBox המקורי
+            # זה מונע את השגיאה CropBox not in MediaBox
+            final_rect = fitz_bbox & mb 
+            
+            # בדיקה שהמלבן הסופי תקין ולא התכווץ לאפס
+            if final_rect and not final_rect.is_empty:
+                page.set_cropbox(final_rect)
+                # אנחנו לא נוגעים ב-MediaBox כדי לא "לשבור" את המבנה הפנימי
             
             progress_bar.progress((pno + 1) / len(src))
 
-        # שמירה של הקובץ המקורי שעבר מודיפיקציה
+        # שמירה
         buffer = io.BytesIO()
-        # שימוש ב-garbage=4 ו-deflate=True כדי להקטין גודל קובץ
         src.save(buffer, garbage=4, deflate=True)
         buffer.seek(0)
 
