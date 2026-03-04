@@ -6,13 +6,13 @@ from PIL import Image
 # שורת הקסם שפותרת את השגיאה שקיבלת:
 Image.MAX_IMAGE_PIXELS = None 
 
-st.set_page_config(page_title="Kienan PDF Trimmer - Ultra Precision", page_icon="✂️")
+st.set_page_config(page_title="Kienan PDF Trimmer", page_icon="✂️")
 
-st.title("✂️ Kienan PDF Trimmer - Fixed")
+st.title("✂️ Kienan PDF Trimmer")
 
 st.markdown(
     """
-    <div style="font-family: 'David', 'David Libre', serif; font-size: 22px; text-align: center; color: #4A4A4A;">
+    <div style="font-family: 'David', 'David Libre', serif; font-size: 26px; text-align: center; color: #4A4A4A;">
         מוצר זה פותח על ידי <b><u>כינאן עוידאת</u></b>, לשימושכם באהבה.
     </div>
     """,
@@ -81,12 +81,13 @@ if uploaded_file:
 
         st.success("הקובץ עובד בהצלחה!")
         st.download_button(
-            label="Download Clean PDF",
+            label="Download Trimmed PDF",
             data=buffer,
-            file_name="final_trimmed.pdf",
+            file_name="Trimmed.pdf",
             mime="application/pdf",
             use_container_width=True
         )
 
     except Exception as e:
         st.error(f"אירעה שגיאה: {e}")
+
