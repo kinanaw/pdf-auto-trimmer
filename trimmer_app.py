@@ -9,8 +9,15 @@ st.set_page_config(page_title="Auto PDF Trimmer", page_icon="✂️")
 
 # 2. כותרת וקרדיט
 st.title("✂️ Automatic PDF White-Space Trimmer")
-st.markdown("### מוצר זה פותח על ידי כינאן עוידאת, לשימושכם באהבה.")
-
+st.markdown(
+    """
+    <div style="font-family: 'David', 'David Libre', serif; font-size: 24px; direction: rtl; text-align: right;">
+        מוצר זה פותח על ידי <b><u>כינאן עוידאת</u></b>, לשימושכם באהבה.
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+st.write("---") # קו מפריד עיצובי
 
 # --- Sidebar Settings ---
 st.sidebar.header("Settings")
@@ -87,3 +94,4 @@ if uploaded_file:
             mime="application/pdf",
             use_container_width=True
         )
+
