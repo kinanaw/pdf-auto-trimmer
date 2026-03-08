@@ -9,7 +9,7 @@ st.markdown("❤️ מוצר זה פותח על ידי כינאן עוידאת, 
 st.markdown("---")
 
 padding_mm = st.sidebar.slider('שוליים נוספים (מ"מ)', 0.0, 20.0, 2.0, 0.5)
-percentile = st.sidebar.slider("פילטר outliers (percentile)", 1, 10, 2, 1)
+sigma      = st.sidebar.slider("חוזק פילטר outliers (sigma)", 1.0, 5.0, 3.0, 0.5)
 
 uploaded_file = st.file_uploader("📂 העלה קובץ PDF", type="pdf")
 
@@ -26,10 +26,11 @@ if uploaded_file:
             mb = fitz.Rect(page.mediabox)
             pad = padding_mm * 2.83465
 
-            # STEP 1: קבל את כל אובייקטי הווקטור
             drawings = page.get_drawings()
 
-            xs0, ys0, xs1, ys1 = [], [], [], []
+            # אסוף מרכזי כל אובייקט
+            centers_x, centers_y = [], []
+            rects = []
 
             for d in drawings:
                 r = d.get("rect")
@@ -37,33 +38,45 @@ if uploaded_file:
                     continue
                 w = r.x1 - r.x0
                 h = r.y1 - r.y0
-                # STEP 4: סנן אובייקטים זעירים (פחות מ-4 נקודות מרובע)
                 if w * h < 4:
                     continue
-                xs0.append(r.x0)
-                ys0.append(r.y0)
-                xs1.append(r.x1)
-                ys1.append(r.y1)
+                cx = (r.x0 + r.x1) / 2
+                cy = (r.y0 + r.y1) / 2
+                centers_x.append(cx)
+                centers_y.append(cy)
+                rects.append(r)
 
-            if not xs0:
-                # אין ווקטורים — דלג
+            if not rects:
                 progress_bar.progress((pno + 1) / n)
                 continue
 
-            # STEP 5: percentile filtering — מסיר outliers של AutoCAD
-            p = percentile
-            xmin = float(np.percentile(xs0, p))
-            ymin = float(np.percentile(ys0, p))
-            xmax = float(np.percentile(xs1, 100 - p))
-            ymax = float(np.percentile(ys1, 100 - p))
+            cx_arr = np.array(centers_x)
+            cy_arr = np.array(centers_y)
 
-            # STEP 7: הוסף שוליים בטיחות
-            xmin -= pad
-            ymin -= pad
-            xmax += pad
-            ymax += pad
+            # סינון outliers לפי סטיית תקן מהמדיאנה
+            med_x = np.median(cx_arr)
+            med_y = np.median(cy_arr)
+            std_x = np.std(cx_arr)
+            std_y = np.std(cy_arr)
 
-            # STEP 8: צור Rect וclamp בתוך mediabox
+            # אם std=0 (כל אובייקטים באותו מקום) תן ערך מינימלי
+            std_x = max(std_x, 1.0)
+            std_y = max(std_y, 1.0)
+
+            filtered = [
+                r for r, cx, cy in zip(rects, centers_x, centers_y)
+                if abs(cx - med_x) <= sigma * std_x
+                and abs(cy - med_y) <= sigma * std_y
+            ]
+
+            if not filtered:
+                filtered = rects  # fallback — קח הכל
+
+            xmin = min(r.x0 for r in filtered) - pad
+            ymin = min(r.y0 for r in filtered) - pad
+            xmax = max(r.x1 for r in filtered) + pad
+            ymax = max(r.y1 for r in filtered) + pad
+
             crop = fitz.Rect(xmin, ymin, xmax, ymax) & mb
 
             if crop.width > 2 and crop.height > 2:
@@ -73,7 +86,7 @@ if uploaded_file:
             progress_bar.progress((pno + 1) / n)
 
         if trimmed == 0:
-            st.warning("⚠️ לא זוהה תוכן — נסה לשנות את ה-percentile.")
+            st.warning("⚠️ לא זוהה תוכן.")
         else:
             buffer = io.BytesIO()
             doc.save(buffer, garbage=4, deflate=True)
